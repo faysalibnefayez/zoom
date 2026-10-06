@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Room</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05040a; font-family: Georgia, serif; color: #f3e9d2; }
+  #cv { position: fixed; inset: 0; width: 100%; height: 100%; }
+  #stage { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; z-index: 1; }
+  .room {
+    position: relative; width: min(94vw, 900px); aspect-ratio: 16 / 10;
+    background: linear-gradient(#2a1f3d 0 68%, #4a3326 68% 100%);
+    border-radius: 12px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.6);
+    will-change: transform, opacity;
+  }
+  .item {
+    position: absolute; display: grid; place-items: center;
+    font-size: clamp(32px, 7vw, 72px); cursor: pointer;
+    background: none; border: 0; transition: transform .2s;
+    filter: drop-shadow(0 4px 6px rgba(0,0,0,.5));
+  }
+  .item:hover, .item:focus-visible { transform: scale(1.2) rotate(-4deg); outline: none; }
+  .item span { position: absolute; bottom: -1.4em; font-size: 13px; opacity: 0; transition: opacity .2s; white-space: nowrap; color: #f3e9d2; }
+  .item:hover span, .item:focus-visible span { opacity: 1; }
+  #hud { position: fixed; top: 18px; left: 20px; right: 20px; z-index: 2; pointer-events: none; text-shadow: 0 2px 8px #000; }
+  #hud h1 { margin: 0; font-size: clamp(20px, 4vw, 30px); font-weight: normal; }
+  #hud p { margin: 6px 0 0; max-width: 46ch; opacity: .85; font-size: 15px; }
+  #ctl { position: fixed; left: 0; right: 0; bottom: 18px; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 8px; text-shadow: 0 2px 8px #000; }
+  #ctl .row { display: flex; gap: 12px; align-items: center; width: min(92vw, 720px); }
+  #ctl button { padding: 8px 14px; border: 1px solid #f3e9d255; border-radius: 6px; background: #00000066; color: #f3e9d2; cursor: pointer; font-family: inherit; touch-action: none; user-select: none; }
+  #ctl input { flex: 1; }
+  #scale { font-size: 14px; opacity: .9; }
+  #modal { position: fixed; inset: 0; display: none; place-items: center; background: rgba(0,0,0,.7); padding: 20px; z-index: 10; }
+  #modal.open { display: grid; }
+  .card { background: #f3e9d2; color: #2a1f3d; max-width: 420px; padding: 28px; border-radius: 10px; text-align: center; }
+  .card h2 { margin-top: 0; }
+  .card button { margin-top: 12px; padding: 8px 18px; border: 0; border-radius: 6px; background: #2a1f3d; color: #f3e9d2; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div id="stage">
+  <div class="room" id="room">
+    <button class="item" style="left:8%; top:18%" data-title="The Window" data-text="It is always night out there. Nobody knows why.">🌙<span>Window</span></button>
+    <button class="item" style="left:42%; top:12%" data-title="The Clock" data-text="It runs backwards. Today it says you are early.">🕰️<span>Clock</span></button>
+    <button class="item" style="left:78%; top:20%" data-title="The Book" data-text="Only one page is readable. It says: try the cauldron.">📖<span>Book</span></button>
+    <button class="item" style="left:20%; top:62%" data-title="The Cauldron" data-text="Something is bubbling. It smells like secrets.">🧪<span>Cauldron</span></button>
+    <button class="item" style="left:62%; top:64%" data-title="The Cat" data-text="The cat stares. You have been judged.">🐈‍⬛<span>Cat</span></button>
+  </div>
+</div>
+
+<div id="hud"><h1 id="hn"></h1><p id="ht"></p></div>
+
+<div id="ctl">
+  <div id="scale"></div>
+  <div class="row">
+    <button id="bin">Zoom in</button>
+    <input type="range" id="sl" min="-15.3" max="19.5" step="0.01" value="0.7">
+    <button id="bout">Zoom out</button>
+  </div>
+</div>
+
+<div id="modal"><div class="card">
+  <h2 id="mt"></h2><p id="mx"></p><button id="close">Close</button>
+</div></div>
+
+<script>
+// ---------- room clicks ----------
+const modal = document.getElementById('modal');
+document.querySelectorAll('.item').forEach(b => b.addEventListener('click', () => {
+  document.getElementById('mt').textContent = b.dataset.title;
+  document.getElementById('mx').textContent = b.dataset.text;
+  modal.classList.add('open');
+}));
+document.getElementById('close').onclick = () => modal.classList.remove('open');
+modal.onclick = e => { if (e.target === modal) modal.classList.remove('open'); };
+
+// ---------- canvas setup ----------
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d'), roomEl = document.getElementById('room');
+let W = 0, H = 0;
+function resize() {
+  const d = Math.min(2, window.devicePixelRatio || 1);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * d; cv.height = H * d;
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+}
+addEventListener('resize', resize); resize();
+
+const TAU = 6.2832;
+function circ(x, y, r, fill) { ctx.beginPath(); ctx.arc(x, y, Math.max(r, 0), 0, TAU); ctx.fillStyle = fill; ctx.fill(); }
+function glow(x, y, r, c0, c1) {
+  if (!(r > 0)) return;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, c0); g.addColorStop(1, c1);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+}
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+// ---------- fixed random data ----------
+const R1 = mulberry32(7);
+const nuc = [...Array(14)].map(() => { const a = R1() * TAU, r = Math.sqrt(R1()) * .55; return [Math.cos(a) * r, Math.sin(a) * r]; });
+const orgs = [...Array(26)].map(() => { const a = R1() * TAU, r = Math.sqrt(R1()) * .8; return [Math.cos(a) * r, Math.sin(a) * r, .03 + R1() * .05, R1() * 3]; });
+const sand = [...Array(30)].map(() => ({ x: (R1() - .5) * 2.4, y: (R1() - .5) * 2.4, r: .15 + R1() * .25, h: R1() }));
+const bld = []; for (let i = -9; i <= 9; i++) for (let j = -9; j <= 9; j++) { if (i % 4 === 0 || j % 4 === 0) continue; bld.push([i, j, 18 + R1() * 16, R1() < .35]); }
+const cont = [...Array(9)].map(() => [(R1() - .5) * 1.2, (R1() - .5) * 1.2, .1 + R1() * .2]);
+const pal = ['255,255,255', '200,220,255', '255,230,190', '255,200,160', '170,200,255'];
+const starsNear = [...Array(80)].map(() => [(R1() - .5) * 6, (R1() - .5) * 6, 1.5 + R1() * 2, pal[Math.floor(R1() * 5)]]);
+const starsFar = [...Array(1500)].map(() => [(R1() - .5) * 10, (R1() - .5) * 10, .6 + R1() * 1.2, pal[Math.floor(R1() * 5)], 1 + R1() * 2, R1() * 6]);
+
+// ---------- scenes ----------
+function drawProton(R, t) {
+  glow(0, 0, R * 1.1, 'rgba(190,120,255,.35)', 'rgba(190,120,255,0)');
+  const cols = ['255,77,94', '77,255,136', '77,155,255'];
+  const p = [0, 1, 2].map(i => { const a = t * .7 + i * 2.094, r = R * .38 * (.85 + .15 * Math.sin(t * 1.3 + i * 2)); return [Math.cos(a) * r, Math.sin(a) * r]; });
+  ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = Math.max(1, R * .015);
+  for (let i = 0; i < 3; i++) {
+    const a = p[i], b = p[(i + 1) % 3];
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]);
+    ctx.quadraticCurveTo((a[0] + b[0]) / 2 + Math.sin(t * 3 + i) * R * .06, (a[1] + b[1]) / 2 + Math.cos(t * 3 + i) * R * .06, b[0], b[1]);
+    ctx.stroke();
+  }
+  p.forEach((q, i) => glow(q[0], q[1], R * .22, `rgba(${cols[i]},1)`, `rgba(${cols[i]},.6)`));
+}
+function drawNucleus(R, t) {
+  glow(0, 0, R * 1.2, 'rgba(255,200,120,.18)', 'rgba(255,200,120,0)');
+  nuc.forEach((p, i) => {
+    const j = Math.sin(t * 2 + i) * .02, c = i % 2 ? '255,90,90' : '90,150,255';
+    glow((p[0] + j) * R, (p[1] + j) * R, R * .2, `rgba(${c},1)`, `rgba(${c},.55)`);
+  });
+}
+function drawAtom(R, t) {
+  glow(0, 0, R, 'rgba(90,160,255,.45)', 'rgba(90,160,255,0)');
+  for (let i = 0; i < 3; i++) {
+    const a = t * (1 + i * .6) + i * 2.1;
+    circ(Math.cos(a) * R * (.35 + .12 * i), Math.sin(a * 1.3) * R * (.3 + .1 * i), 3, '#cfe6ff');
+  }
+  circ(0, 0, Math.max(1.5, R * 2.5e-5), '#ff9a5a');
+}
+function drawDNA(R, t) {
+  ctx.rotate(-.5); ctx.lineCap = 'round';
+  const N = 70, L = R * 3.2, pts = [];
+  for (let i = 0; i <= N; i++) pts.push([(i / N - .5) * L, Math.sin(i / N * 16 + t * .8) * R * .28]);
+  ctx.lineWidth = Math.max(1, R * .015);
+  for (let i = 0; i <= N; i += 2) {
+    ctx.strokeStyle = i % 4 ? 'rgba(255,210,120,.55)' : 'rgba(140,255,170,.55)';
+    ctx.beginPath(); ctx.moveTo(pts[i][0], pts[i][1]); ctx.lineTo(pts[i][0], -pts[i][1]); ctx.stroke();
+  }
+  ctx.lineWidth = Math.max(1, R * .04);
+  [1, -1].forEach((sg, j) => {
+    ctx.strokeStyle = j ? '#6ad0ff' : '#ff7ab8'; ctx.beginPath();
+    pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1] * sg) : ctx.moveTo(p[0], p[1] * sg));
+    ctx.stroke();
+  });
+}
+function drawCell(R, t) {
+  glow(0, 0, R * .98, 'rgba(255,170,190,.5)', 'rgba(255,120,150,.25)');
+  ctx.lineWidth = Math.max(1, R * .02); ctx.strokeStyle = 'rgba(255,200,210,.8)';
+  ctx.beginPath(); ctx.arc(0, 0, R * .98, 0, TAU); ctx.stroke();
+  glow(R * .12, -R * .08, R * .34, 'rgba(120,90,200,.95)', 'rgba(90,60,170,.9)');
+  orgs.forEach(o => {
+    ctx.save(); ctx.translate((o[0] + Math.sin(t * .4 + o[3]) * .02) * R, (o[1] + Math.cos(t * .35 + o[3]) * .02) * R);
+    ctx.rotate(o[3]); ctx.scale(1.6, 1); circ(0, 0, o[2] * R, 'rgba(255,220,120,.75)'); ctx.restore();
+  });
+}
+function drawSand(R) {
+  sand.forEach(s => { const l = 60 + s.h * 30; glow(s.x * R * .9, s.y * R * .9, s.r * R * .5, `hsl(36,45%,${l + 10}%)`, `hsl(30,40%,${l - 15}%)`); });
+}
+function drawCity(R) {
+  const u = R * .11;
+  ctx.fillStyle = '#0b1020'; ctx.fillRect(-R * 1.1, -R * 1.1, R * 2.2, R * 2.2);
+  bld.forEach(b => {
+    const x = b[0] * u, y = b[1] * u;
+    if (Math.abs(x) > W || Math.abs(y) > H) return;
+    ctx.fillStyle = `hsl(220,25%,${b[2]}%)`; ctx.fillRect(x + u * .08, y + u * .08, u * .84, u * .84);
+    if (b[3]) { ctx.fillStyle = 'rgba(255,220,130,.8)'; ctx.fillRect(x + u * .3, y + u * .3, u * .15, u * .15); ctx.fillRect(x + u * .55, y + u * .55, u * .15, u * .15); }
+  });
+}
+function drawEarth(R) {
+  glow(0, 0, R * 1.12, 'rgba(120,180,255,.35)', 'rgba(120,180,255,0)');
+  ctx.save(); ctx.beginPath(); ctx.arc(0, 0, R * .9, 0, TAU); ctx.clip();
+  glow(-R * .3, -R * .3, R * 1.6, '#3d86d6', '#0b2a5c');
+  cont.forEach(c => circ(c[0] * R, c[1] * R, c[2] * R, 'rgba(70,160,90,.9)'));
+  glow(-R * .4, -R * .4, R * 1.8, 'rgba(0,0,20,0)', 'rgba(0,0,20,.6)');
+  ctx.restore();
+}
+function drawMoon(R, t) {
+  ctx.strokeStyle = 'rgba(255,255,255,.2)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(0, 0, R * .9, 0, TAU); ctx.stroke();
+  glow(0, 0, Math.max(R * .015, 2.5), '#6fb4ff', '#2a64b8');
+  const a = t * .15; circ(Math.cos(a) * R * .9, Math.sin(a) * R * .9, Math.max(R * .0041, 1.5), '#cfcfcf');
+}
+function drawSun(R, t) {
+  glow(0, 0, R * 1.8, 'rgba(255,170,60,.35)', 'rgba(255,120,30,0)');
+  glow(0, 0, R, '#fff3b0', '#ff9a2e');
+  for (let i = 0; i < 6; i++) {
+    const a = t * .2 + i * 1.05;
+    glow(Math.cos(a) * R, Math.sin(a) * R, R * .22 * (.7 + .3 * Math.sin(t * 2 + i)), 'rgba(255,220,120,.9)', 'rgba(255,120,30,0)');
+  }
+}
+function drawSolar(R, t) {
+  const au = R * .95 / 30;
+  glow(0, 0, Math.max(R * 4.5e-4, 10), 'rgba(255,230,150,.9)', 'rgba(255,160,60,0)');
+  circ(0, 0, Math.max(R * 1.5e-4, 2.5), '#fff3b0');
+  [[.39, '#b0a090'], [.72, '#e8c27a'], [1, '#4f9bff'], [1.52, '#e0704a'], [5.2, '#e3b98b'], [9.6, '#e8d29b'], [19.2, '#9fd8e8'], [30, '#5b7bff']].forEach(p => {
+    const r = au * p[0]; if (r > 2e5) return;
+    ctx.strokeStyle = 'rgba(255,255,255,.16)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.stroke();
+    const a = t * .3 / Math.pow(p[0], 1.5) + p[0] * 2; circ(Math.cos(a) * r, Math.sin(a) * r, 3, p[1]);
+  });
+}
+function drawNear(R) {
+  starsNear.forEach(s => {
+    const x = s[0] * R, y = s[1] * R;
+    if (Math.abs(x) > W / 2 + 10 || Math.abs(y) > H / 2 + 10) return;
+    glow(x, y, s[2] * 3, `rgba(${s[3]},1)`, `rgba(${s[3]},0)`);
+  });
+  glow(0, 0, 9, '#fff3b0', 'rgba(255,160,60,0)');
+  ctx.font = '13px Georgia'; ctx.fillStyle = 'rgba(255,255,255,.8)';
+  ctx.fillText('Sun', 12, -8);
+  const ax = Math.cos(.6) * R * .8, ay = Math.sin(.6) * R * .8;
+  glow(ax, ay, 9, '#ffe2a0', 'rgba(255,170,80,0)'); ctx.fillText('Alpha Centauri', ax + 12, ay - 8);
+}
+function drawLocal(R, t) {
+  glow(R * .6, -R * .2, R * 2.5, 'rgba(120,90,200,.18)', 'rgba(120,90,200,0)');
+  glow(-R * 1.2, R * .8, R * 2, 'rgba(80,140,220,.14)', 'rgba(80,140,220,0)');
+  starsFar.forEach(p => {
+    const x = p[0] * R, y = p[1] * R;
+    if (Math.abs(x) > W / 2 + 4 || Math.abs(y) > H / 2 + 4) return;
+    ctx.fillStyle = `rgba(${p[3]},${.7 + .3 * Math.sin(t * p[4] + p[5])})`;
+    ctx.beginPath(); ctx.arc(x, y, p[2], 0, TAU); ctx.fill();
+  });
+}
+
+// c = log10 of metres across the screen's shorter side when the scene fills the screen
+// lo and hi = range where the scene is fully visible, f = fade distance
+const ST = [
+  { c: -14.65, lo: -99, hi: -14.95, f: .7, n: 'A proton', t: 'Three quarks held together by the strong force.', draw: drawProton },
+  { c: -14.05, lo: -14.45, hi: -13.7, f: .7, n: 'An atomic nucleus', t: 'Protons and neutrons packed together, about 5 femtometres across.', draw: drawNucleus },
+  { c: -9.58, lo: -13.1, hi: -9.2, f: .7, n: 'An atom', t: 'The nucleus is about 100,000 times smaller than the atom. The rest is the electron cloud.', draw: drawAtom },
+  { c: -8.03, lo: -8.7, hi: -6.9, f: .7, n: 'DNA', t: 'A double helix about 2 nanometres wide.', draw: drawDNA },
+  { c: -4.57, lo: -5.9, hi: -3.9, f: .7, n: 'A human cell', t: 'Roughly 20 micrometres across.', draw: drawCell },
+  { c: -2.31, lo: -3.3, hi: -1.7, f: .7, n: 'Grains of sand', t: 'Around half a millimetre each.', draw: drawSand },
+  { c: 0.7, lo: 0, hi: 1.4, f: 1.2, n: 'The room', t: 'About 5 metres across. Click the objects.', dom: true },
+  { c: 4.1, lo: 2.3, hi: 4.8, f: .7, n: 'A city', t: 'About 10 kilometres across.', draw: drawCity },
+  { c: 7.27, lo: 5.6, hi: 7.6, f: .7, n: 'Earth', t: '12,742 kilometres wide.', draw: drawEarth },
+  { c: 9.05, lo: 8.4, hi: 8.9, f: .7, n: 'The Moon\'s orbit', t: 'The Moon is about 384,000 kilometres from Earth.', draw: drawMoon },
+  { c: 9.26, lo: 9.35, hi: 9.8, f: .7, n: 'The Sun', t: '1.4 million kilometres wide. That is wider than the Moon\'s entire orbit.', draw: drawSun },
+  { c: 13.1, lo: 10.4, hi: 13.8, f: .7, n: 'The Solar System', t: 'Out to Neptune\'s orbit, about 60 AU across.', draw: drawSolar },
+  { c: 17.1, lo: 14.8, hi: 17.7, f: .7, n: 'The nearest stars', t: 'Alpha Centauri is 4.4 light years away. Most of the space between is empty.', draw: drawNear },
+  { c: 19.3, lo: 18.4, hi: 99, f: .7, n: 'Our patch of the galaxy', t: 'A few thousand light years across, with millions of stars.', draw: drawLocal }
+];
+
+function alpha(g, s) {
+  let a = 1;
+  if (s < g.lo) a = 1 - (g.lo - s) / g.f; else if (s > g.hi) a = 1 - (s - g.hi) / g.f;
+  a = Math.max(0, Math.min(1, a));
+  return a * a * (3 - 2 * a);
+}
+function fmt(m) {
+  const ly = 9.4607e15, au = 1.496e11;
+  const n = (v, u) => (v >= 100 ? Math.round(v).toLocaleString() : v >= 10 ? v.toFixed(1) : v.toFixed(2)) + ' ' + u;
+  if (m < 1e-12) return n(m * 1e15, 'femtometres');
+  if (m < 1e-9) return n(m * 1e12, 'picometres');
+  if (m < 1e-6) return n(m * 1e9, 'nanometres');
+  if (m < 1e-3) return n(m * 1e6, 'micrometres');
+  if (m < 1) return n(m * 1e3, 'millimetres');
+  if (m < 1e3) return n(m, 'metres');
+  if (m < 1e11) return n(m / 1e3, 'kilometres');
+  if (m < ly * .1) return n(m / au, 'AU');
+  return n(m / ly, 'light years');
+}
+
+// ---------- controls ----------
+const MIN = -15.3, MAX = 19.5;
+let s = 0.7, target = 0.7, hold = 0, dragging = false, cur = -1, last = performance.now();
+const sl = document.getElementById('sl'), elN = document.getElementById('hn'), elT = document.getElementById('ht'), elS = document.getElementById('scale');
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+addEventListener('wheel', e => { if (modal.classList.contains('open')) return; e.preventDefault(); target = clamp(target + clamp(e.deltaY, -120, 120) * .0025, MIN, MAX); }, { passive: false });
+sl.addEventListener('pointerdown', () => dragging = true);
+sl.addEventListener('input', () => target = +sl.value);
+['pointerup', 'pointercancel', 'change'].forEach(ev => sl.addEventListener(ev, () => dragging = false));
+function bindHold(id, dir) {
+  const b = document.getElementById(id);
+  b.addEventListener('pointerdown', e => { hold = dir; b.setPointerCapture(e.pointerId); });
+  ['pointerup', 'pointercancel'].forEach(ev => b.addEventListener(ev, () => hold = 0));
+}
+bindHold('bin', -1); bindHold('bout', 1);
+
+// ---------- main loop ----------
+function frame(now) {
+  const dt = Math.min(.05, (now - last) / 1000); last = now;
+  target = clamp(target + hold * dt * .6, MIN, MAX);
+  const cap = 1.5 * dt;
+  s += clamp((target - s) * Math.min(1, dt * 3), -cap, cap);
+  const t = now / 1000, base = Math.min(W, H) * .38;
+  ctx.clearRect(0, 0, W, H);
+  let best = 0, ba = -1;
+  ST.forEach((g, i) => {
+    const a = alpha(g, s);
+    if (a > ba) { ba = a; best = i; }
+    const k = Math.pow(10, g.c - s);
+    if (g.dom) {
+      roomEl.style.opacity = a;
+      roomEl.style.visibility = a > .01 ? 'visible' : 'hidden';
+      roomEl.style.transform = `scale(${k})`;
+      roomEl.style.pointerEvents = a > .6 ? 'auto' : 'none';
+      return;
+    }
+    if (a <= .005) return;
+    ctx.save(); ctx.translate(W / 2, H / 2); ctx.globalAlpha = a; g.draw(base * k, t); ctx.restore();
+  });
+  if (best !== cur) { cur = best; elN.textContent = ST[best].n; elT.textContent = ST[best].t; }
+  elS.textContent = 'Scale: about ' + fmt(Math.pow(10, s)) + ' across';
+  if (!dragging) sl.value = s;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
